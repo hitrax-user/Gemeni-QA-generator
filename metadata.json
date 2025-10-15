@@ -1,0 +1,6 @@
+{
+  "name": "PDF Chunker & Q&A Generator",
+  "description": "A web app to analyze and split PDF documents into logical chunks for creating Q&A datasets and RAG indexing.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
