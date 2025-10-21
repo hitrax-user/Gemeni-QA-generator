@@ -5,6 +5,7 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Chunk, PDFDocumentProxy, QAPair } from './types';
 import { generateQuestionsAndAnswers } from './services/geminiService';
+import { extractPdfPages, arrayBufferToBase64 } from './utils/pdfUtils';
 import PdfViewer from './components/PdfViewer';
 import ChunkManager from './components/ChunkManager';
 import QaGenerator from './components/QaGenerator';
@@ -18,13 +19,14 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const App: React.FC = () => {
   const [file, setFile] = useState<File | null>(null);
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null);
+  const [pdfArrayBuffer, setPdfArrayBuffer] = useState<ArrayBuffer | null>(null);
   const [appError, setAppError] = useState<string | null>(null);
   const [isParsing, setIsParsing] = useState(false);
 
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [nextChunkId, setNextChunkId] = useState(1);
   const [selectedChunk, setSelectedChunk] = useState<Chunk | null>(null);
-  
+
   const [isAutoSplitting, setIsAutoSplitting] = useState(false);
   const [hasOutline, setHasOutline] = useState<boolean | null>(null);
   const [isTextBased, setIsTextBased] = useState<boolean | null>(null);
@@ -32,13 +34,12 @@ const App: React.FC = () => {
   const [qaCache, setQaCache] = useState<Record<number, QAPair[]>>({});
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
   const [generationProgress, setGenerationProgress] = useState({ current: 0, total: 0 });
-  
-  const [analyzeImages, setAnalyzeImages] = useState(false);
 
 
   const resetStateForNewFile = () => {
       setFile(null);
       setPdfDoc(null);
+      setPdfArrayBuffer(null);
       setAppError(null);
       setChunks([]);
       setSelectedChunk(null);
@@ -48,7 +49,6 @@ const App: React.FC = () => {
       setQaCache({});
       setIsGeneratingAll(false);
       setGenerationProgress({ current: 0, total: 0 });
-      setAnalyzeImages(false);
   };
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -62,10 +62,13 @@ const App: React.FC = () => {
       reader.onload = async (event) => {
         if (event.target?.result) {
           try {
-            const loadingTask = pdfjsLib.getDocument({ data: event.target.result });
+            const arrayBuffer = event.target.result as ArrayBuffer;
+            setPdfArrayBuffer(arrayBuffer);
+
+            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
             const pdf = await loadingTask.promise;
             setPdfDoc(pdf);
-            
+
             // Check for outline for auto-splitting
             const outline = await pdf.getOutline();
             setHasOutline(!!outline && outline.length > 0);
@@ -217,59 +220,38 @@ const App: React.FC = () => {
     return fullText;
   }, [pdfDoc]);
 
-  const extractImagesForChunk = useCallback(async (chunk: Chunk): Promise<string[]> => {
-    if (!pdfDoc) return [];
-    const images: string[] = [];
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d', { willReadFrequently: true });
-    if (!context) {
-        console.error("Could not get 2d context from canvas");
-        return [];
-    }
+  const extractPdfForChunk = useCallback(async (chunk: Chunk): Promise<string | null> => {
+    if (!pdfArrayBuffer) return null;
 
-    for (let i = chunk.startPage; i <= chunk.endPage; i++) {
-        try {
-            const page = await pdfDoc.getPage(i);
-            const viewport = page.getViewport({ scale: 1.5 });
-            canvas.width = viewport.width;
-            canvas.height = viewport.height;
-            
-            const renderContext = {
-                canvasContext: context,
-                viewport: viewport,
-            };
-            await page.render(renderContext).promise;
+    try {
+        // Extract the specific pages for this chunk
+        const chunkPdfBuffer = await extractPdfPages(
+            pdfArrayBuffer,
+            chunk.startPage,
+            chunk.endPage
+        );
 
-            const base64Data = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
-            if (base64Data) {
-                images.push(base64Data);
-            }
-        } catch (error) {
-            console.error(`Failed to render page ${i} as an image:`, error);
-        }
+        // Convert to base64
+        const base64Pdf = arrayBufferToBase64(chunkPdfBuffer);
+        return base64Pdf;
+    } catch (error) {
+        console.error(`Failed to extract PDF for chunk (pages ${chunk.startPage}-${chunk.endPage}):`, error);
+        return null;
     }
-    return images;
-  }, [pdfDoc]);
+  }, [pdfArrayBuffer]);
 
 
   const generateQaForChunk = useCallback(async (chunk: Chunk) => {
     const text = await extractTextForChunk(chunk);
-    let images: string[] | undefined = undefined;
+    const pdfBase64 = await extractPdfForChunk(chunk);
 
-    if (analyzeImages) {
-        images = await extractImagesForChunk(chunk);
+    if (!text.trim() && !pdfBase64) {
+        throw new Error("Could not extract any content from this chunk.");
     }
 
-    if (!text.trim() && (!images || images.length === 0)) {
-        if (isTextBased === false && !analyzeImages) {
-             throw new Error("This is an image-only document. Please enable 'Analyze Images & Schematics' to generate Q&A.");
-        }
-        throw new Error("Could not extract any content (text or images) from this chunk.");
-    }
-    
     // The service now returns simple { question, answer } pairs without context.
-    const basePairs = await generateQuestionsAndAnswers(text, images);
-    
+    const basePairs = await generateQuestionsAndAnswers(text, pdfBase64 || undefined);
+
     // We construct the final QAPair with context programmatically for consistency.
     const finalPairs: QAPair[] = basePairs.map(pair => {
       if (!pair.question || !pair.answer) {
@@ -281,7 +263,7 @@ const App: React.FC = () => {
       if (!questionText.endsWith('?')) {
         questionText += '?';
       }
-      
+
       const contextPrefix = chunk.contextTitle
         ? `In the section "${chunk.contextTitle}" of the document "${file?.name || 'this document'}", `
         : `In the document "${file?.name || 'this document'}", `;
@@ -296,7 +278,7 @@ const App: React.FC = () => {
     }).filter((p): p is QAPair => p !== null);
 
     setQaCache(prev => ({ ...prev, [chunk.id]: finalPairs }));
-  }, [extractTextForChunk, extractImagesForChunk, isTextBased, file, analyzeImages]);
+  }, [extractTextForChunk, extractPdfForChunk, file]);
 
   const handleGenerateAllQa = useCallback(async () => {
     if (chunks.length === 0) return;
@@ -442,7 +424,7 @@ const App: React.FC = () => {
                 />
             </section>
             <aside className="lg:col-span-4 h-full overflow-hidden">
-                <QaGenerator 
+                <QaGenerator
                     selectedChunk={selectedChunk}
                     chunks={chunks}
                     qaCache={qaCache}
@@ -451,8 +433,6 @@ const App: React.FC = () => {
                     saveAllQa={handleSaveAllQa}
                     isGeneratingAll={isGeneratingAll}
                     generationProgress={generationProgress}
-                    analyzeImages={analyzeImages}
-                    setAnalyzeImages={setAnalyzeImages}
                     isTextBased={isTextBased}
                 />
             </aside>

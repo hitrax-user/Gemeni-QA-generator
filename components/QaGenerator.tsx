@@ -11,13 +11,11 @@ interface QaGeneratorProps {
   saveAllQa: () => void;
   isGeneratingAll: boolean;
   generationProgress: { current: number; total: number };
-  analyzeImages: boolean;
-  setAnalyzeImages: (enabled: boolean) => void;
   isTextBased: boolean | null;
 }
 
-const QaGenerator: React.FC<QaGeneratorProps> = ({ 
-    selectedChunk, 
+const QaGenerator: React.FC<QaGeneratorProps> = ({
+    selectedChunk,
     chunks,
     qaCache,
     generateQaForChunk,
@@ -25,8 +23,6 @@ const QaGenerator: React.FC<QaGeneratorProps> = ({
     saveAllQa,
     isGeneratingAll,
     generationProgress,
-    analyzeImages,
-    setAnalyzeImages,
     isTextBased
 }) => {
   const [isLoading, setIsLoading] = useState(false);
@@ -67,30 +63,6 @@ const QaGenerator: React.FC<QaGeneratorProps> = ({
         <p className="text-sm text-slate-400 mb-4">
           Selected Chunk <span className="font-bold">#{selectedChunk.id}</span> (Pages: {selectedChunk.startPage} - {selectedChunk.endPage})
         </p>
-
-        <div className="bg-slate-900/70 p-3 rounded-md mb-4">
-            <label htmlFor="analyze-images-toggle" className="flex items-center justify-between cursor-pointer" title="Enable to analyze diagrams, schematics, and other images in the PDF.">
-                <span className="font-medium text-slate-300">Analyze Images & Schematics</span>
-                <div className="relative">
-                    <input 
-                        id="analyze-images-toggle" 
-                        type="checkbox" 
-                        className="sr-only" 
-                        checked={analyzeImages} 
-                        onChange={e => setAnalyzeImages(e.target.checked)}
-                        disabled={isGeneratingAll}
-                    />
-                    <div className="block bg-slate-700 w-12 h-7 rounded-full"></div>
-                    <div className={`dot absolute left-1 top-1 bg-white w-5 h-5 rounded-full transition-transform ${analyzeImages ? 'transform translate-x-5 bg-indigo-400' : ''}`}></div>
-                </div>
-            </label>
-             {isTextBased === false && !analyzeImages && (
-                <p className="text-center text-amber-400 text-xs mt-2">
-                    This is an image-only document. Enable analysis to generate Q&A.
-                </p>
-            )}
-        </div>
-
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
             <button
